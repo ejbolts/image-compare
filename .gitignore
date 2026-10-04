@@ -1,0 +1,23 @@
+# Build binaries and symbols
+*.exe
+*.dll
+*.pdb
+
+# Build and IDE directories
+bin/
+obj/
+.vs/
+.vscode/
+*.user
+
+# Python cache (for icon generator script)
+__pycache__/
+*.pyc
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
