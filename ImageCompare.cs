@@ -24,6 +24,7 @@ namespace ImageCompare
         readonly CompareCanvas canvas = new CompareCanvas();
         readonly Label beforeInfo = new Label(), afterInfo = new Label(), status = new Label(), percent = new Label();
         readonly Button swap;
+        readonly CheckBox verticalCheck;
         readonly Icon appIcon;
         string beforeName = "No image selected", afterName = "No image selected";
         readonly Color muted = Color.FromArgb(155, 166, 186);
@@ -32,9 +33,8 @@ namespace ImageCompare
         {
             Text = "Image Compare"; BackColor = Color.FromArgb(20, 24, 33); ForeColor = Color.White;
             using (var stream = typeof(CompareForm).Assembly.GetManifestResourceStream("ImageCompare.ico"))
-                appIcon = new Icon(stream, new Size(32, 32));
-            Icon = appIcon;
-            ShowIcon = true;
+                if (stream != null) appIcon = new Icon(stream, new Size(32, 32));
+            if (appIcon != null) { Icon = appIcon; ShowIcon = true; }
             Font = new Font("Segoe UI", 10); ClientSize = new Size(1100, 760); MinimumSize = new Size(720, 520);
             StartPosition = FormStartPosition.CenterScreen; KeyPreview = true;
             var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(24), ColumnCount = 1, RowCount = 5 };
@@ -61,10 +61,33 @@ namespace ImageCompare
             actions.Controls.Add(swap);
             actions.Controls.Add(MakeButton("Center slider", delegate { canvas.Position = .5; canvas.Focus(); }));
             actions.Controls.Add(MakeButton("Try demo", delegate { Demo(); }));
+            verticalCheck = new CheckBox
+            {
+                Text = "Vertical comparison",
+                AutoSize = true,
+                ForeColor = Color.White,
+                Cursor = Cursors.Hand,
+                Margin = new Padding(12, 7, 8, 0)
+            };
+            verticalCheck.CheckedChanged += delegate
+            {
+                canvas.IsVertical = verticalCheck.Checked;
+                canvas.Focus();
+            };
+            actions.Controls.Add(verticalCheck);
             percent.Text = "50%"; percent.ForeColor = Color.FromArgb(157, 206, 255); percent.AutoSize = true; percent.Margin = new Padding(14, 8, 0, 0); actions.Controls.Add(percent);
             layout.Controls.Add(actions, 0, 3);
             status.Dock = DockStyle.Fill; status.ForeColor = muted; status.TextAlign = ContentAlignment.MiddleLeft; status.AutoEllipsis = true; status.Margin = new Padding(0);
             layout.Controls.Add(status, 0, 4);
+            KeyDown += delegate(object s, KeyEventArgs e)
+            {
+                if (e.KeyCode == Keys.V && !e.Control && !e.Alt)
+                {
+                    verticalCheck.Checked = !verticalCheck.Checked;
+                    e.Handled = true;
+                    e.SuppressKeyPress = true;
+                }
+            };
             UpdateInfo();
             Shown += delegate { if (args.Length > 0) LoadFile(args[0], true); if (args.Length > 1) LoadFile(args[1], false); };
         }
@@ -167,20 +190,50 @@ namespace ImageCompare
         public Bitmap Before { get; private set; }
         public Bitmap After { get; private set; }
         double position = .5;
+        bool isVertical;
         bool dragging;
         public event Action<string[], bool> FilesDropped;
         public event EventHandler PositionChanged;
+        public bool IsVertical
+        {
+            get { return isVertical; }
+            set
+            {
+                if (isVertical == value) return;
+                isVertical = value;
+                Cursor = isVertical ? Cursors.HSplit : Cursors.VSplit;
+                UpdateAccessibility();
+                Invalidate();
+            }
+        }
         public double Position {
             get { return position; }
-            set { position = Math.Max(0, Math.Min(1, value)); AccessibleDescription = "Comparison divider at " + Math.Round(position * 100) + " percent. Use arrow keys, Home or End."; Invalidate(); if (PositionChanged != null) PositionChanged(this, EventArgs.Empty); }
+            set {
+                position = Math.Max(0, Math.Min(1, value));
+                UpdateAccessibility();
+                Invalidate();
+                if (PositionChanged != null) PositionChanged(this, EventArgs.Empty);
+            }
+        }
+        void UpdateAccessibility()
+        {
+            AccessibleDescription = string.Format("Comparison divider at {0} percent. Drag {1}, or use arrow keys, Home or End.",
+                Math.Round(position * 100), isVertical ? "up and down" : "side to side");
         }
         public CompareCanvas()
         {
             SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw | ControlStyles.Selectable, true);
             TabStop = true; AllowDrop = true; BackColor = Color.FromArgb(13, 17, 24); Cursor = Cursors.VSplit;
             AccessibleName = "Image comparison slider"; AccessibleRole = AccessibleRole.Slider;
+            UpdateAccessibility();
             DragEnter += delegate(object s, DragEventArgs e) { e.Effect = e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None; };
-            DragDrop += delegate(object s, DragEventArgs e) { if (FilesDropped != null) FilesDropped((string[])e.Data.GetData(DataFormats.FileDrop), PointToClient(new Point(e.X, e.Y)).X < Width / 2); };
+            DragDrop += delegate(object s, DragEventArgs e) {
+                if (FilesDropped != null) {
+                    var pt = PointToClient(new Point(e.X, e.Y));
+                    bool isBefore = isVertical ? (pt.Y < Height / 2) : (pt.X < Width / 2);
+                    FilesDropped((string[])e.Data.GetData(DataFormats.FileDrop), isBefore);
+                }
+            };
         }
         public void SetImage(Bitmap img, bool before) { if (before) { if (Before != null) Before.Dispose(); Before = img; } else { if (After != null) After.Dispose(); After = img; } Invalidate(); }
         public void Swap() { var img = Before; Before = After; After = img; Invalidate(); }
@@ -217,28 +270,72 @@ namespace ImageCompare
                 var frame = Frame(); Checker(g, frame);
                 if (Before == null || After == null) DrawImage(g, Before ?? After, frame);
                 else {
-                    DrawImage(g, After, frame); float x = frame.Left + frame.Width * (float)position;
-                    var save = g.Save(); g.SetClip(new RectangleF(frame.Left, frame.Top, frame.Width * (float)position, frame.Height));
-                    Checker(g, frame); DrawImage(g, Before, frame); g.Restore(save);
-                    using (var shadow = new Pen(Color.FromArgb(80, 0, 0, 0), 5)) g.DrawLine(shadow, x, frame.Top, x, frame.Bottom);
-                    using (var pen = new Pen(Color.White, 2)) g.DrawLine(pen, x, frame.Top, x, frame.Bottom);
-                    float cy = frame.Top + frame.Height / 2;
-                    g.FillEllipse(Brushes.White, x - 21, cy - 21, 42, 42);
-                    using (var pen = new Pen(Color.FromArgb(35, 48, 66), 2)) { g.DrawLines(pen, new[] { new PointF(x - 6, cy - 5), new PointF(x - 11, cy), new PointF(x - 6, cy + 5) }); g.DrawLines(pen, new[] { new PointF(x + 6, cy - 5), new PointF(x + 11, cy), new PointF(x + 6, cy + 5) }); }
+                    DrawImage(g, After, frame);
+                    if (isVertical) {
+                        float y = frame.Top + frame.Height * (float)position;
+                        var save = g.Save();
+                        g.SetClip(new RectangleF(frame.Left, frame.Top, frame.Width, frame.Height * (float)position));
+                        Checker(g, frame); DrawImage(g, Before, frame);
+                        g.Restore(save);
+                        using (var shadow = new Pen(Color.FromArgb(80, 0, 0, 0), 5)) g.DrawLine(shadow, frame.Left, y, frame.Right, y);
+                        using (var pen = new Pen(Color.White, 2)) g.DrawLine(pen, frame.Left, y, frame.Right, y);
+                        float cx = frame.Left + frame.Width / 2;
+                        g.FillEllipse(Brushes.White, cx - 21, y - 21, 42, 42);
+                        using (var pen = new Pen(Color.FromArgb(35, 48, 66), 2)) {
+                            g.DrawLines(pen, new[] { new PointF(cx - 5, y - 6), new PointF(cx, y - 11), new PointF(cx + 5, y - 6) });
+                            g.DrawLines(pen, new[] { new PointF(cx - 5, y + 6), new PointF(cx, y + 11), new PointF(cx + 5, y + 6) });
+                        }
+                    } else {
+                        float x = frame.Left + frame.Width * (float)position;
+                        var save = g.Save();
+                        g.SetClip(new RectangleF(frame.Left, frame.Top, frame.Width * (float)position, frame.Height));
+                        Checker(g, frame); DrawImage(g, Before, frame);
+                        g.Restore(save);
+                        using (var shadow = new Pen(Color.FromArgb(80, 0, 0, 0), 5)) g.DrawLine(shadow, x, frame.Top, x, frame.Bottom);
+                        using (var pen = new Pen(Color.White, 2)) g.DrawLine(pen, x, frame.Top, x, frame.Bottom);
+                        float cy = frame.Top + frame.Height / 2;
+                        g.FillEllipse(Brushes.White, x - 21, cy - 21, 42, 42);
+                        using (var pen = new Pen(Color.FromArgb(35, 48, 66), 2)) {
+                            g.DrawLines(pen, new[] { new PointF(x - 6, cy - 5), new PointF(x - 11, cy), new PointF(x - 6, cy + 5) });
+                            g.DrawLines(pen, new[] { new PointF(x + 6, cy - 5), new PointF(x + 11, cy), new PointF(x + 6, cy + 5) });
+                        }
+                    }
                 }
                 Badge(g, Before == null ? "AFTER" : "BEFORE", 14, 14);
-                if (Before != null && After != null) Badge(g, "AFTER", Width - 89, 14);
+                if (Before != null && After != null) {
+                    if (isVertical) Badge(g, "AFTER", 14, Height - 40);
+                    else Badge(g, "AFTER", Width - 89, 14);
+                }
             }
             using (var pen = new Pen(Focused ? Color.FromArgb(114, 170, 226) : Color.FromArgb(49, 58, 73))) g.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
         }
         void Badge(Graphics g, string text, int x, int y) { using (var b = new SolidBrush(Color.FromArgb(215, 25, 32, 44))) g.FillRectangle(b, x, y, 75, 26); using (var f = new Font("Segoe UI Semibold", 8)) using (var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center }) g.DrawString(text, f, Brushes.White, new Rectangle(x, y, 75, 26), sf); }
-        void MoveDivider(int x) { var frame = Frame(); Position = (x - frame.Left) / Math.Max(1, frame.Width); }
-        protected override void OnMouseDown(MouseEventArgs e) { base.OnMouseDown(e); Focus(); if (e.Button == MouseButtons.Left && Before != null && After != null) { dragging = true; Capture = true; MoveDivider(e.X); } }
-        protected override void OnMouseMove(MouseEventArgs e) { base.OnMouseMove(e); if (dragging) MoveDivider(e.X); }
+        void MoveDivider(Point pt)
+        {
+            var frame = Frame();
+            if (isVertical)
+                Position = (pt.Y - frame.Top) / Math.Max(1f, frame.Height);
+            else
+                Position = (pt.X - frame.Left) / Math.Max(1f, frame.Width);
+        }
+        protected override void OnMouseDown(MouseEventArgs e) { base.OnMouseDown(e); Focus(); if (e.Button == MouseButtons.Left && Before != null && After != null) { dragging = true; Capture = true; MoveDivider(e.Location); } }
+        protected override void OnMouseMove(MouseEventArgs e) { base.OnMouseMove(e); if (dragging) MoveDivider(e.Location); }
         protected override void OnMouseUp(MouseEventArgs e) { base.OnMouseUp(e); if (e.Button == MouseButtons.Left) { dragging = false; Capture = false; } }
         protected override void OnMouseCaptureChanged(EventArgs e) { base.OnMouseCaptureChanged(e); if (!Capture) dragging = false; }
-        protected override bool IsInputKey(Keys keyData) { var key = keyData & Keys.KeyCode; return key == Keys.Left || key == Keys.Right || key == Keys.Home || key == Keys.End || base.IsInputKey(keyData); }
-        protected override void OnKeyDown(KeyEventArgs e) { base.OnKeyDown(e); if (Before == null || After == null) return; double step = e.Shift ? .1 : .01; switch (e.KeyCode) { case Keys.Left: Position -= step; break; case Keys.Right: Position += step; break; case Keys.Home: Position = 0; break; case Keys.End: Position = 1; break; default: return; } e.Handled = true; e.SuppressKeyPress = true; }
+        protected override bool IsInputKey(Keys keyData) { var key = keyData & Keys.KeyCode; return key == Keys.Left || key == Keys.Right || key == Keys.Up || key == Keys.Down || key == Keys.Home || key == Keys.End || base.IsInputKey(keyData); }
+        protected override void OnKeyDown(KeyEventArgs e) {
+            base.OnKeyDown(e);
+            if (Before == null || After == null) return;
+            double step = e.Shift ? .1 : .01;
+            switch (e.KeyCode) {
+                case Keys.Left: case Keys.Up: Position -= step; break;
+                case Keys.Right: case Keys.Down: Position += step; break;
+                case Keys.Home: Position = 0; break;
+                case Keys.End: Position = 1; break;
+                default: return;
+            }
+            e.Handled = true; e.SuppressKeyPress = true;
+        }
         protected override void OnGotFocus(EventArgs e) { base.OnGotFocus(e); Invalidate(); }
         protected override void OnLostFocus(EventArgs e) { base.OnLostFocus(e); Invalidate(); }
         protected override void Dispose(bool disposing) { if (disposing) { if (Before != null) Before.Dispose(); if (After != null) After.Dispose(); Before = After = null; } base.Dispose(disposing); }
